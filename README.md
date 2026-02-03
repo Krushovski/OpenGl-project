@@ -4,3 +4,10 @@
 * LIGHTS ON and OFF - "L"
 * LIGHTS BRIGHTNESS LEVELS - "+" AND "-"
 * MOVING AROUND WITH W,A,S,D keys
+
+
+USED libriaries:
+ASSIMP, 
+SDL2,
+GLEW-2.20,
+GLM

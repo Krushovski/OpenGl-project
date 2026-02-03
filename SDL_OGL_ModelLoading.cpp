@@ -33,8 +33,7 @@ bool rainEnabled = false;
 
 GLuint rainVAO, rainVBO;
 
-//rainEnabled = (currentWeather == Weather::Rainy);  inside render
-
+float lampIntensity = 1.0f;
 bool sconceLightOn = true;
 glm::vec3 sconceLightPos = glm::vec3(-6.0f, 0.8f, -0.6f);
 glm::vec3 sconceLightColor = glm::vec3(1.0f, 0.85f, 0.6f);
@@ -46,15 +45,17 @@ void DrawCube(GLuint id);
 void close();
 void InitRain();
 void InitRainBuffers();
-
+void InitShadowBuffers();
+void renderSceneDepth(const Shader& shader, const glm::mat4& lightSpaceMatrix);
+void renderScene(const Shader& shader, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& lightSpaceMatrix, const glm::vec3& lightDir);
 //The window we'll be rendering to
 SDL_Window* gWindow = NULL;
 
 //OpenGL context
 SDL_GLContext gContext;
 
-Shader gShader, gLightSource_1, rainShader;
-Model gModel, gModelHouse, gSconceLight;
+Shader gShader, gLightSource_1, rainShader, depthShader;
+Model gModelHouse, gSconceLight, gPc, zahaLight;
 
 GLuint gVAO, gVBO, gEBO;
 
@@ -72,10 +73,76 @@ float lastFrame = 0.0f;
 // lighting
 glm::vec3 lightPos(-4.5f, 0.9f, 3.0f);
 
+GLuint depthMapFBO = 0;
+GLuint depthMap = 0;
+const unsigned int SHADOW_WIDTH = 2048;
+const unsigned int SHADOW_HEIGHT = 2048;
+
 //event handlers
 void HandleKeyDown(const SDL_KeyboardEvent& key);
 void HandleMouseMotion(const SDL_MouseMotionEvent& motion);
 void HandleMouseWheel(const SDL_MouseWheelEvent& wheel);
+bool CheckObstacleCollision(glm::vec3 position);
+
+
+
+struct AABB {
+	glm::vec3 min;
+	glm::vec3 max;
+};
+
+std::vector<AABB> worldObstacles;
+
+AABB CalculateWorldAABB(const Model& model, glm::mat4 modelMatrix) {
+	glm::vec3 localMin = model.GetAABBMin();
+	glm::vec3 localMax = model.GetAABBMax();
+
+	glm::vec3 corners[8] = {
+		glm::vec3(localMin.x, localMin.y, localMin.z),
+		glm::vec3(localMax.x, localMin.y, localMin.z),
+		glm::vec3(localMin.x, localMax.y, localMin.z),
+		glm::vec3(localMin.x, localMin.y, localMax.z),
+		glm::vec3(localMax.x, localMax.y, localMin.z),
+		glm::vec3(localMax.x, localMin.y, localMax.z),
+		glm::vec3(localMin.x, localMax.y, localMax.z),
+		glm::vec3(localMax.x, localMax.y, localMax.z)
+	};
+
+	glm::vec3 worldMin(FLT_MAX);
+	glm::vec3 worldMax(-FLT_MAX);
+
+	for (int i = 0; i < 8; ++i) {
+		glm::vec4 worldPos = modelMatrix * glm::vec4(corners[i], 1.0f);
+
+		worldMin.x = std::min(worldMin.x, worldPos.x);
+		worldMin.y = std::min(worldMin.y, worldPos.y);
+		worldMin.z = std::min(worldMin.z, worldPos.z);
+
+		worldMax.x = std::max(worldMax.x, worldPos.x);
+		worldMax.y = std::max(worldMax.y, worldPos.y);
+		worldMax.z = std::max(worldMax.z, worldPos.z);
+	}
+
+	return { worldMin, worldMax };
+}
+
+bool CheckObstacleCollision(glm::vec3 position) {
+	float playerSize = 0.45f;
+
+	for (const auto& box : worldObstacles) {
+		bool collisionX = position.x + playerSize > box.min.x && position.x - playerSize < box.max.x;
+		bool collisionY = position.y + playerSize > box.min.y && position.y - playerSize < box.max.y;
+		bool collisionZ = position.z + playerSize > box.min.z && position.z - playerSize < box.max.z;
+
+		if (collisionX && collisionZ && collisionY) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
+
 
 int main(int argc, char* args[])
 {
@@ -138,19 +205,26 @@ int main(int argc, char* args[])
 
 void HandleKeyDown(const SDL_KeyboardEvent& key)
 {
+	float velocity = camera.MovementSpeed * deltaTime;
+	glm::vec3 nextPos = camera.Position; // Predict where we are going
+
 	switch (key.keysym.sym)
 	{
 	case SDLK_w:
-		camera.ProcessKeyboard(FORWARD, deltaTime);
+		nextPos += camera.Front * velocity;
+		if (!CheckObstacleCollision(nextPos)) camera.ProcessKeyboard(FORWARD, deltaTime);
 		break;
 	case SDLK_s:
-		camera.ProcessKeyboard(BACKWARD, deltaTime);
+		nextPos -= camera.Front * velocity;
+		if (!CheckObstacleCollision(nextPos)) camera.ProcessKeyboard(BACKWARD, deltaTime);
 		break;
 	case SDLK_a:
-		camera.ProcessKeyboard(LEFT, deltaTime);
+		nextPos -= camera.Right * velocity;
+		if (!CheckObstacleCollision(nextPos)) camera.ProcessKeyboard(LEFT, deltaTime);
 		break;
 	case SDLK_d:
-		camera.ProcessKeyboard(RIGHT, deltaTime);
+		nextPos += camera.Right * velocity;
+		if (!CheckObstacleCollision(nextPos)) camera.ProcessKeyboard(RIGHT, deltaTime);
 		break;
 	case SDLK_l:
 		sconceLightOn = !sconceLightOn;
@@ -163,6 +237,18 @@ void HandleKeyDown(const SDL_KeyboardEvent& key)
 		else
 			currentWeather = Weather::Sunny;
 		break;
+	case SDLK_PLUS:          // main keyboard +
+	case SDLK_KP_PLUS:      // numpad +
+		lampIntensity += 0.1f;
+		lampIntensity = glm::min(lampIntensity, 3.0f); 
+		break;
+
+	case SDLK_MINUS:         // main keyboard -
+	case SDLK_KP_MINUS:     // numpad -
+		lampIntensity -= 0.1f;
+		lampIntensity = glm::max(lampIntensity, 0.0f); 
+		break;
+
 	}
 }
 
@@ -176,6 +262,7 @@ void HandleMouseMotion(const SDL_MouseMotionEvent& motion)
 	}
 	else
 	{
+		
 		camera.ProcessMouseMovement(motion.x - lastX, lastY - motion.y);
 		lastX = motion.x;
 		lastY = motion.y;
@@ -280,62 +367,91 @@ bool initGL()
 
 	gShader.Load("./shaders/vertex.vert", "./shaders/fragment.frag");
 	gLightSource_1.Load("./shaders/light_source_vertex.vert", "./shaders/light_source_fragment.frag");
-	rainShader.Load("./shaders/rain.vert",
-		"./shaders/rain.frag");
-	gVAO = CreateCube(1.0f, gVBO);
+	depthShader.Load("./shaders/shadow_depth.vert", "./shaders/shadow_depth.frag");
+	rainShader.Load("./shaders/rain.vert", "./shaders/rain.frag");
 
-	//gModel.LoadModel("./models/casa/casa moderna.obj");
-	/*gModel.LoadModel("./models/nanosuit/nanosuit.obj");
-	gModelGasTank.LoadModel("./models/gas_tank/gas_tanck27_lod0.obj");*/
+	// Load Models
 	gModelHouse.LoadModel("./models/house/house_interior.obj");
 	gSconceLight.LoadModel("./models/light/eb_sconce_light_01.obj");
-	gModelHouse.GetAABBMin();
-	gModelHouse.GetAABBMax();
+	gPc.LoadModel("./models/ko/ko.obj");
+	zahaLight.LoadModel("./models/zahaLight/ZAHA LIGHT white chandelier.obj");
+	// -----------------------------------------------------------------------
+	// COLLISION SETUP
+	// -----------------------------------------------------------------------
 
-	// compute world-space AABB for the house and assign bounds to camera
-	
-	glm::vec3 localMin = gModelHouse.GetAABBMin();
-	glm::vec3 localMax = gModelHouse.GetAABBMax();
-
-	// house model transform used in render()
+	// 1. SETUP HOUSE BOUNDARIES (The "Container")
+	// Must match render() transform: Translate(-6,0,0) -> Scale(0.009)
 	glm::mat4 houseModel = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.0f, 0.0f));
 	houseModel = glm::scale(houseModel, glm::vec3(0.009f, 0.009f, 0.009f));
 
-	// transform all 8 corners and compute world AABB
-	glm::vec3 corners[8] = {
-		glm::vec3(localMin.x, localMin.y, localMin.z),
-		glm::vec3(localMax.x, localMin.y, localMin.z),
-		glm::vec3(localMin.x, localMax.y, localMin.z),
-		glm::vec3(localMin.x, localMin.y, localMax.z),
-		glm::vec3(localMax.x, localMax.y, localMin.z),
-		glm::vec3(localMax.x, localMin.y, localMax.z),
-		glm::vec3(localMin.x, localMax.y, localMax.z),
-		glm::vec3(localMax.x, localMax.y, localMax.z)
-	};
+	// Calculate world AABB for the house
+	AABB houseBox = CalculateWorldAABB(gModelHouse, houseModel);
 
-	glm::vec3 worldMin(FLT_MAX), worldMax(-FLT_MAX);
-	for (int i = 0; i < 8; ++i) {
-		glm::vec4 wc = houseModel * glm::vec4(corners[i], 1.0f);
-		worldMin.x = std::min(worldMin.x, wc.x);
-		worldMin.y = std::min(worldMin.y, wc.y);
-		worldMin.z = std::min(worldMin.z, wc.z);
-		worldMax.x = std::max(worldMax.x, wc.x);
-		worldMax.y = std::max(worldMax.y, wc.y);
-		worldMax.z = std::max(worldMax.z, wc.z);
-	}
+	// Pass this to the Camera so it knows the room limits
+	// Margin 0.15f keeps us slightly away from the walls
+	camera.SetAABBBounds(houseBox.min, houseBox.max, 0.15f);
+
+
+	// 2. SETUP PC OBSTACLE
+	// Must match render() transform: Translate(-5.5, 0, -0.2) -> Scale(0.009)
+	glm::mat4 pcModel = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.8f, 5.2f));
+	pcModel = glm::scale(pcModel, glm::vec3(0.006f, 0.006f, 0.006f));
+
+	worldObstacles.push_back(CalculateWorldAABB(gPc, pcModel));
+
+
+	// 3. SETUP SCONCE OBSTACLE
+	// Must match render() transform: Translate(-6, 0.8, -0.6) -> Scale(1e-8)
+	glm::mat4 lightModel = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.8f, -0.6f));
+	lightModel = glm::scale(lightModel, glm::vec3(0.009f));
+
+	worldObstacles.push_back(CalculateWorldAABB(gSconceLight, lightModel));
+
+	// -----------------------------------------------------------------------
 
 	InitRain();
 	InitRainBuffers();
 
-	// optional: set a slightly smaller interior bounds if the AABB touches outer walls.
-	float margin = 0.15f; // tweak as needed
-	camera.SetAABBBounds(worldMin, worldMax, margin);
-	
-	//gVAO = CreateCube(1.0f, gVBO, gEBO);
-
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); //other modes GL_FILL, GL_POINT
+	gVAO = CreateCube(1.0f, gVBO);
+	InitShadowBuffers();
+	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
 	return success;
+}
+
+
+void InitShadowBuffers()
+{
+	GLuint depthFBO;
+	glGenFramebuffers(1, &depthFBO);
+
+	GLuint depthMap;
+	glGenTextures(1, &depthMap);
+	glBindTexture(GL_TEXTURE_2D, depthMap);
+	glTexImage2D(
+		GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
+		2048, 2048, 0,
+		GL_DEPTH_COMPONENT, GL_FLOAT, nullptr
+	);
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+
+	float borderColor[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, borderColor);
+
+	glBindFramebuffer(GL_FRAMEBUFFER, depthFBO);
+	glFramebufferTexture2D(
+		GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+		GL_TEXTURE_2D, depthMap, 0
+	);
+
+	glDrawBuffer(GL_NONE);
+	glReadBuffer(GL_NONE);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
 }
 
 void InitRainBuffers()
@@ -364,10 +480,15 @@ void close()
 {
 	//delete GL programs, buffers and objects
 	glDeleteProgram(gShader.ID);
+	glDeleteProgram(depthShader.ID);
+	glDeleteProgram(rainShader.ID);
 	glDeleteVertexArrays(1, &gVAO);
+	glDeleteProgram(gLightSource_1.ID);
 	glDeleteBuffers(1, &gVBO);
 
 	//Delete OGL context
+	if (rainVAO) glDeleteVertexArrays(1, &rainVAO);
+	if (rainVBO) glDeleteBuffers(1, &rainVBO);
 	SDL_GL_DeleteContext(gContext);
 	//Destroy window	
 	SDL_DestroyWindow(gWindow);
@@ -379,65 +500,72 @@ void close()
 
 void render()
 {
-	//Clear color buffer
+	glm::vec3 lightDir = glm::normalize(glm::vec3(-0.2f, -1.0f, -0.3f));
+	glm::vec3 lightPosWorld = -lightDir * 20.0f;
+
+
+	float near_plane = 1.0f, far_plane = 50.0f;
+	float ortho_size = 20.0f;
+	glm::mat4 lightProjection = glm::ortho(-ortho_size, ortho_size, -ortho_size, ortho_size, near_plane, far_plane);
+	glm::mat4 lightView = glm::lookAt(lightPosWorld, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::mat4 lightSpaceMatrix = lightProjection * lightView;
+
+	// ---------------- PASS 1: depth pass ----------------
+	glViewport(0, 0, SHADOW_WIDTH, SHADOW_HEIGHT);
+	glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
+	glClear(GL_DEPTH_BUFFER_BIT);
+	depthShader.use();
+	depthShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+	renderSceneDepth(depthShader, lightSpaceMatrix);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+	// ---------------- PASS 2: render scene ----------------
+	glViewport(0, 0, 840, 680);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	glm::mat4 model = glm::mat4(1.0f);
-//	model = glm::rotate(model, glm::radians(30.0f), glm::vec3(0, 0, 1));
 	model = glm::translate(model, glm::vec3(0.0f, -1.0f, 0.0f));
-	//depending on the model size, the model may have to be scaled up or down to be visible
-//  model = glm::scale(model, glm::vec3(0.001f, 0.001f, 0.001f));
 	model = glm::scale(model, glm::vec3(0.2f, 0.2f, 0.2f));
 
 	glm::mat4 view = camera.GetViewMatrix();
 	glm::mat4 proj = glm::perspective(glm::radians(camera.Zoom), 4.0f / 3.0f, 0.1f, 100.0f);
-
 	glm::mat3 normalMat = glm::transpose(glm::inverse(model));
+
 	
-	glUseProgram(gShader.ID);
-	// --- send sconce uniforms ---
-	gShader.setBool("sconceLightOn", sconceLightOn);             // if setBool exists
-	// fallback if no setBool: gShader.setInt("sconceLightOn", sconceLightOn ? 1 : 0);
+	gShader.use();
+	// sconce uniforms
+	gShader.setBool("sconceLightOn", sconceLightOn);
 	gShader.setVec3("sconceLightPos", sconceLightPos);
-	gShader.setVec3("sconceLightColor", sconceLightColor);
+	gShader.setVec3("sconceLightColor", sconceLightColor * lampIntensity);
 	gShader.setFloat("sconceConstant", 1.0f);
 	gShader.setFloat("sconceLinear", 0.09f);
 	gShader.setFloat("sconceQuadratic", 0.032f);
-
-	// emission defaults
 	gShader.setVec3("lampEmissionColor", sconceLightColor);
 	float lampStrength = (currentWeather == Weather::Night) ? 2.5f : 1.2f;
-	gShader.setFloat("lampEmissionStrength", lampStrength);
+	gShader.setFloat("lampEmissionStrength", lampStrength * lampIntensity);
 
-
-	// ensure isLamp is false for normal models:
-	gShader.setBool("isLamp", false); // or setInt(..., 0)
-
-	//transformations
 	gShader.setMat4("model", model);
 	gShader.setMat4("view", view);
 	gShader.setMat4("proj", proj);
 	gShader.setMat3("normalMat", normalMat);
 
-	//lighting
-	gShader.setVec3("light.diffuse", 1.0f, 1.0f, 1.0f);
-	gShader.setVec3("light.position", lightPos);
-	gShader.setVec3("viewPos", camera.Position);
+	// set dirLight + lightSpaceMatrix + bind shadow map
+	gShader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+	gShader.setVec3("dirLight.direction", lightDir);
+	gShader.setVec3("dirLight.color", glm::vec3(1.0f));
 
+	// bind depth map to texture unit 1 (matches shader sampler)
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, depthMap);
+	gShader.setInt("shadowMap", 1);
 
-	model = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.0f, 0.0f));
-	model = glm::scale(model, glm::vec3(0.009f, 0.009f, 0.009f));
-	gShader.setMat4("model", model);
-
-
+	// weather-dependent uniforms (same as before)
 	switch (currentWeather)
 	{
 	case Weather::Sunny:
 		gShader.setVec3("globalLightColor", glm::vec3(1.0f));
 		gShader.setFloat("ambientStrength", 0.6f);
 		gShader.setFloat("exposure", 1.0f);
-
-		// no fog
 		gShader.setFloat("fogDensity", 0.0f);
 		break;
 
@@ -445,25 +573,20 @@ void render()
 		gShader.setVec3("globalLightColor", glm::vec3(0.6f, 0.65f, 0.7f));
 		gShader.setFloat("ambientStrength", 0.35f);
 		gShader.setFloat("exposure", 0.85f);
-
-		// fog ON
 		gShader.setVec3("fogColor", glm::vec3(0.5f, 0.55f, 0.6f));
 		gShader.setFloat("fogDensity", 0.03f);
-		
-
 		break;
 
 	case Weather::Night:
 		gShader.setVec3("globalLightColor", glm::vec3(0.2f, 0.2f, 0.4f));
 		gShader.setFloat("ambientStrength", 0.1f);
 		gShader.setFloat("exposure", 0.5f);
-
-		// light fog or none (your choice)
 		gShader.setVec3("fogColor", glm::vec3(0.05f, 0.05f, 0.1f));
 		gShader.setFloat("fogDensity", 0.01f);
 		break;
 	}
-	// after the switch(currentWeather) { ... } block:
+
+	// after the switch
 	rainEnabled = (currentWeather == Weather::Rainy);
 
 	// ---- update rain particle positions (camera-centered respawn) ----
@@ -489,7 +612,7 @@ void render()
 		}
 	}
 
-	// ---- prepare vertex data and update GPU buffer ----
+	// ---- prepare vertex data and update GPU buffer and draw rain ----
 	if (rainEnabled)
 	{
 		std::vector<glm::vec3> rainVerts;
@@ -502,7 +625,6 @@ void render()
 			rainVerts.push_back(d.position + glm::vec3(0.0f, -0.15f, 0.0f));
 		}
 
-		// safety: don't upload zero bytes
 		if (!rainVerts.empty())
 		{
 			glBindBuffer(GL_ARRAY_BUFFER, rainVBO);
@@ -514,39 +636,28 @@ void render()
 		rainShader.setMat4("view", view);
 		rainShader.setMat4("proj", proj);
 
-		// nice visibility tweaks:
-		glLineWidth(1.5f);            // make streaks thicker
+		glLineWidth(1.5f);
 		glEnable(GL_BLEND);
 		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-		// keep depth test on, but don't write to depth buffer (so translucent streaks render nicely)
 		glEnable(GL_DEPTH_TEST);
-		glDepthMask(GL_FALSE); // prevent rain from occluding subsequent draws
+		glDepthMask(GL_TRUE);
 
 		glBindVertexArray(rainVAO);
 		glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(rainVerts.size()));
 
 		// restore depth write
 		glDepthMask(GL_TRUE);
-		// optional: glLineWidth(1.0f);
 
-		// unbind
 		glBindVertexArray(0);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
 	}
 
-	gModelHouse.Draw(gShader);
+	// Render the scene using the scene shader (samples depthMap internally)
+	// We already set many uniforms above, call helper to draw the objects
+	renderScene(gShader, view, proj, lightSpaceMatrix, lightDir);
 
-	//                  draw gSconceLight
-	gShader.setBool("isLamp", true);
-	model = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.8, -0.6f));
-	model = glm::scale(model, glm::vec3(0.009f, 0.009f, 0.009f));
-	gShader.setMat4("model", model);
-	gSconceLight.Draw(gShader);
-	gShader.setBool("isLamp", false);
-
-	//------------- code for the lights ---------------------
-	
+	// draw light visualizer
 	static float angle = 0.0f;
 	angle += 45.0f * deltaTime;
 	lightPos.x = cos(glm::radians(angle)) * 1.5f;
@@ -555,7 +666,7 @@ void render()
 	glUseProgram(gLightSource_1.ID);
 	glm::mat4 model1 = glm::mat4(1.0f);	//transformations
 	//gLightSource_1.setMat4("model", model);
-	
+
 	//gLightSource_1.setMat3("normalMat", normalMat);
 
 	//lighting
@@ -568,11 +679,85 @@ void render()
 	gLightSource_1.setMat4("model", model1);
 	gLightSource_1.setMat4("view", view);
 	gLightSource_1.setMat4("projection", proj);
-
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	DrawCube(gVAO);
-
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
+// ------------- Scene rendering helpers -------------
+// Render objects into the depth map: use depthShader and only write depth
+void renderSceneDepth(const Shader& shader, const glm::mat4& lightSpaceMatrix)
+{
+	// house
+	glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.0f, 0.0f));
+	model = glm::scale(model, glm::vec3(0.009f, 0.009f, 0.009f));
+	shader.setMat4("model", model);
+	shader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+	gModelHouse.Draw(const_cast<Shader&>(shader));
+
+	// pc
+	glm::mat4 pc = glm::mat4(1.0f);
+	pc = glm::translate(pc, glm::vec3(-6.0f, 0.0f, 5.2f));
+	pc = glm::scale(pc, glm::vec3(0.004f, 0.004f, 0.004f));
+	shader.setMat4("model", pc);
+	gPc.Draw(const_cast<Shader&>(shader));
+
+	// sconce (if you want it to cast shadows)
+	glm::mat4 sModel = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.8f, -0.6f));
+	sModel = glm::scale(sModel, glm::vec3(0.009f, 0.009f, 0.009f));
+	shader.setMat4("model", sModel);
+	gSconceLight.Draw(const_cast<Shader&>(shader));
+
+
+	//zahalight
+	glm::mat4 zaha = glm::translate(glm::mat4(1.0f), glm::vec3(-5.8f, 0.7f, 0.5f));
+	zaha = glm::scale(zaha, glm::vec3(0.9f, 0.9f, 0.9f));
+	shader.setMat4("model", zaha);
+	zahaLight.Draw(const_cast<Shader&>(shader));
+}
+
+// Render scene normally using gShader which samples shadowMap
+void renderScene(const Shader& shader, const glm::mat4& view, const glm::mat4& proj, const glm::mat4& lightSpaceMatrix, const glm::vec3& lightDir)
+{
+	// set uniforms commonly used by models
+	shader.setMat4("view", view);
+	shader.setMat4("proj", proj);
+	shader.setMat4("lightSpaceMatrix", lightSpaceMatrix);
+	shader.setVec3("viewPos", camera.Position);
+	shader.setVec3("dirLight.direction", lightDir);
+	shader.setVec3("dirLight.color", glm::vec3(1.0f));
+
+	// house
+	glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.0f, 0.0f));
+	model = glm::scale(model, glm::vec3(0.009f, 0.009f, 0.009f));
+	shader.setMat4("model", model);
+	shader.setBool("isLamp", false);
+	gModelHouse.Draw(const_cast<Shader&>(shader));
+
+	// pc
+	glm::mat4 pc = glm::mat4(1.0f);
+	pc = glm::translate(pc, glm::vec3(-6.0f, 0.0f, 2.3f));
+	pc = glm::scale(pc, glm::vec3(0.004f, 0.004f, 0.004f));
+	shader.setMat4("model", pc);
+	gPc.Draw(const_cast<Shader&>(shader));
+
+	// sconce (lamp) - render tiny model but mark as lamp (emission)
+	shader.setBool("isLamp", true);
+	glm::mat4 sModel = glm::translate(glm::mat4(1.0f), glm::vec3(-6.0f, 0.8f, -0.6f));
+	sModel = glm::scale(sModel, glm::vec3(0.009f, 0.009f, 0.009f));
+	shader.setMat4("model", sModel);
+	gSconceLight.Draw(const_cast<Shader&>(shader));
+	shader.setBool("isLamp", false);
+
+
+	shader.setBool("isLamp", true);
+	glm::mat4 zaha = glm::translate(glm::mat4(1.0f), glm::vec3(-5.8f, 0.7f, 0.5f));
+	zaha = glm::scale(zaha, glm::vec3(0.9f, 0.9f, 0.9f));
+	shader.setMat4("model", zaha);
+	zahaLight.Draw(const_cast<Shader&>(shader));
+	shader.setBool("isLamp", false);
+
+}
 
 GLuint CreateCube(float width, GLuint& VBO)
 {

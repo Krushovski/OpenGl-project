@@ -10,7 +10,7 @@ newmtl wire_000000000
 	Ka 0.0000 0.0000 0.0000
 	Kd 0.0000 0.0000 0.0000
 	Ks 0.3500 0.3500 0.3500
-mad_Kd Blue.jpg
+mad_Kd fluorescent-light-diffuser-texture.jpg
 newmtl wire_198225087
 	Ns 32
 	d 1
@@ -20,7 +20,7 @@ newmtl wire_198225087
 	Ka 0.7765 0.8824 0.3412
 	Kd 0.7765 0.8824 0.3412
 	Ks 0.3500 0.3500 0.3500
-mad_Kd Blue.jpg
+mad_Kd fluorescent-light-diffuser-texture.jpg
 newmtl wire_228184153
 	Ns 32
 	d 1
@@ -30,7 +30,7 @@ newmtl wire_228184153
 	Ka 0.8941 0.7216 0.6000
 	Kd 0.8941 0.7216 0.6000
 	Ks 0.3500 0.3500 0.3500
-mad_Kd Blue.jpg
+mad_Kd fluorescent-light-diffuser-texture.jpg
 newmtl wire_086086086
 	Ns 32
 	d 1
@@ -40,4 +40,4 @@ newmtl wire_086086086
 	Ka 0.3373 0.3373 0.3373
 	Kd 0.3373 0.3373 0.3373
 	Ks 0.3500 0.3500 0.3500
-mad_Kd Blue.jpg
+mad_Kd fluorescent-light-diffuser-texture.jpg

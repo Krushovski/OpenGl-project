@@ -11,3 +11,5 @@ ASSIMP,
 SDL2,
 GLEW-2.20,
 GLM
+
+house, ko, light, zahaLight need to be put into a folder called "models".
